@@ -42,15 +42,20 @@
       url = "github:nix-community/haumea/v0.2.2";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    lib-extras = {
+      url = "github:aldoborrero/lib-extras";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = inputs @ {
     flake-parts,
     haumea,
     nixpkgs,
+    nixpkgs-unstable,
     ...
   }: let
-    lib = nixpkgs.lib.extend (final: _: import ./lib.nix final);
+    lib = nixpkgs-unstable.lib.extend (l: _: (inputs.lib-extras.lib l));
     localInputs = haumea.lib.load {
       src = ./.;
       loader = haumea.lib.loaders.path;
@@ -63,18 +68,18 @@
     {
       imports = [
         inputs.flake-root.flakeModule
+        inputs.treefmt-nix.flakeModule
         inputs.devshell.flakeModule
-
-        localInputs.checks
-        localInputs.formatter
-        localInputs.flake-shell
       ];
       systems = ["x86_64-linux"];
       perSystem = {
         pkgs,
+        pkgsUnstable,
         system,
+        config,
         ...
       }: {
+        # nixpkgs
         _module.args = {
           pkgs = lib.nix.mkNixpkgs {
             inherit system;
@@ -83,6 +88,100 @@
           pkgsUnstable = lib.nix.mkNixpkgs {
             inherit system;
             nixpkgs = inputs.nixpkgs-unstable;
+          };
+        };
+
+        # shell
+        devshells.default = {
+          name = "hacienda-gpt";
+          packages = with pkgsUnstable; [
+            faiss
+            httpie
+            playwright
+            poetry
+            poppler
+            python311
+            stdenv
+            tesseract
+          ];
+          commands = with lib;
+          with builtins; let
+            poetryCommand = {
+              bin,
+              args ? ["$@"],
+            }: {
+              category = "python";
+              name = "${bin}";
+              help = "Run ${bin}";
+              command = "poetry run ${bin} ${concatStringsSep " " args}";
+            };
+            commandList = [
+              {bin = "pytest";}
+              {bin = "streamlit";}
+            ];
+          in
+            (map poetryCommand commandList)
+            ++ [
+              {
+                category = "Tools";
+                name = "fmt";
+                help = "Format the source tree";
+                command = "nix fmt";
+              }
+              {
+                category = "Tools";
+                name = "check";
+                help = "Checks the source tree";
+                command = "nix flake check";
+              }
+            ];
+          env = with lib; [
+            {
+              name = "LD_LIBRARY_PATH";
+              value = "${makeLibraryPath (with pkgsUnstable; [
+                stdenv.cc.cc.lib
+              ])}";
+            }
+            {
+              name = "PLAYWRIGHT_BROWSERS_PATH";
+              value = pkgsUnstable.playwright-driver.browsers-chromium;
+            }
+            {
+              name = "PLAYWRIGHT_BROWSERS_BINARY_PATH";
+              value = "${pkgsUnstable.playwright-driver.browsers-chromium}/chromium-1076/chrome-linux/chrome";
+            }
+            {
+              name = "PLAYWRIGHT_NODEJS_PATH";
+              value = getExe pkgsUnstable.nodejs_18;
+            }
+          ];
+        };
+
+        # checks
+        checks = with lib;
+        # merge in the package derivations to force a build of all packages during a `nix flake check`
+          mapAttrs' (n: nameValuePair "package-${n}") self'.packages;
+
+        # formatter
+        treefmt.config = {
+          inherit (config.flake-root) projectRootFile;
+          flakeFormatter = true;
+          flakeCheck = true;
+          programs = {
+            alejandra.enable = true;
+            black.enable = true;
+            deadnix.enable = true;
+            mdformat.enable = true;
+            prettier.enable = true;
+            ruff.enable = true;
+          };
+          settings.formatter = {
+            prettier.excludes = [
+              "*.md"
+              "./tests/*"
+              "*.html"
+            ];
+            ruff.options = ["--fix"];
           };
         };
       };

@@ -151,3 +151,6 @@ dmypy.json
 /.direnv
 /.envrc.local
 /env
+
+# other
+/data
